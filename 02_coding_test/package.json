@@ -1,0 +1,12 @@
+{
+  "name": "02_coding_test",
+  "version": "1.0.0",
+  "main": "index.js",
+  "author": "Connor Bell",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.17.1",
+    "faux-api-client": "^1.0.9",
+    "request": "^2.88.0"
+  }
+}
