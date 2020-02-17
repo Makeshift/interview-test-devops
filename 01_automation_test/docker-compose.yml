@@ -1,0 +1,9 @@
+version: "3.7" # Expects Docker 18.06.0+
+services:
+  nginx:
+    image: nginx:alpine # Nice small Alpine image
+    restart: unless-stopped # Just in case Nginx dies
+    volumes:
+        - ./static:/usr/share/nginx/html:ro # Simple bind mount to the nginx default public www location
+    ports:
+      - "80:80" # Forward to 80 in the container to 8080 on the host
