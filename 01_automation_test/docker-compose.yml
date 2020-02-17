@@ -6,4 +6,4 @@ services:
     volumes:
         - ./static:/usr/share/nginx/html:ro # Simple bind mount to the nginx default public www location
     ports:
-      - "80:80" # Forward to 80 in the container to 8080 on the host
+      - "80:80" # Forward to 80 in the container to 80 on the host
