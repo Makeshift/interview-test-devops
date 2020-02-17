@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Base Cluster Stack
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: What environment level are we in?
+    AllowedValues:
+      - dev
+      - cqa
+      - prod
+  DescriptiveName:
+    Type: String
+    Default: default
+    Description: What is this stack?
+  AutoScalingDesiredCount:
+    Type: Number
+    Default: 1
+    Description: How much resiliancy do you need? This is how many hosts the ECS will scale up to
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    Description: How big should the ECS instances be?
+  EC2KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: staging
+    Description: What's the name of your SSH keypair?
+  Vpc:
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-0a864e72
+    Description: What VPC should we set the cluster up in?
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Default: subnet-5465510e,subnet-75df850c,subnet-c553148e
+    Description: What subnets should we be allowed to autoscale to?
+  ECSAMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
+    Description: Which AMI should we use to create our ECS hosts?
+
+Resources:
+# Create a security group that manages access to the ECS EC2's themselves
+  EcsSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      VpcId: !Ref Vpc
+      GroupName: !Sub "ecs-${Environment}-${AWS::StackName}"
+      GroupDescription: ECS Allowed Ports
+      SecurityGroupIngress:
+        # Allows SSH globally
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+# Allows the security group to talk within the security group to anyone - This includes 
+#   allowing load balancers in the same SG to talk to the ECS hosts
+  SelfToSelfSG:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    Properties:
+      IpProtocol: TCP
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId: !Ref EcsSecurityGroup
+      GroupId: !Ref EcsSecurityGroup
+      Description: Self to Self SG
+# Gives the ECS task permission to put logs into Cloudwatch and get images from ECR
+  EcsTaskExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub "ecs-task-execution-${Environment}-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs.amazonaws.com
+                - ecs-tasks.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Policies:
+        - PolicyName: !Sub "ecs-task-execution-${Environment}-${AWS::StackName}"
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "ecr:GetAuthorizationToken"
+                  - "ecr:BatchCheckLayerAvailability"
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:BatchGetImage"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+# Allows the ECS EC2 instances to actually act as ECS hosts
+  EcsInstanceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub "ecs-instance-${Environment}-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Policies:
+        - PolicyName: !Sub "ecs-instance-${Environment}-${AWS::StackName}"
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "ecs:CreateCluster"
+                  - "ecs:DeregisterContainerInstance"
+                  - "ecs:DiscoverPollEndpoint"
+                  - "ecs:Poll"
+                  - "ecs:RegisterContainerInstance"
+                  - "ecs:StartTelemetrySession"
+                  - "ecs:Submit*"
+                  - "ecr:GetAuthorizationToken"
+                  - "ecr:BatchCheckLayerAvailability"
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:BatchGetImage"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+# Assigns the role to an instance profile for autoscaling
+  InstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EcsInstanceRole
+      InstanceProfileName: !Sub "ecs-instance-profile-${Environment}-${AWS::StackName}"
+# Adds a log group for services to group logs into
+  LogsGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Sub "${Environment}-${AWS::StackName}"
+      RetentionInDays: 14
+# Defines the actual ECS cluster
+  EcsCluster:
+    Type: "AWS::ECS::Cluster"
+    Properties:
+      ClusterName: !Sub ${Environment}-${AWS::StackName}
+# Defines a launch configuration for autoscaling tasks
+  LaunchConfiguration:
+    Type: "AWS::AutoScaling::LaunchConfiguration"
+    Properties:
+      LaunchConfigurationName: !Sub "${Environment}-${AWS::StackName}"
+      ImageId: !Ref ECSAMI
+      InstanceType: !Ref InstanceType
+      SecurityGroups:
+        - !Ref EcsSecurityGroup
+      IamInstanceProfile: !Ref InstanceProfile
+      KeyName: !Ref EC2KeyName
+      UserData:
+        Fn::Base64:
+          Fn::Sub: >
+            #!/bin/bash -xe
+
+            echo ECS_CLUSTER=${EcsCluster} >> /etc/ecs/ecs.config
+
+            yum install -y aws-cfn-bootstrap
+
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource
+            AutoScalingGroup --region ${AWS::Region}
+# Defines the actual autoscaling group
+  AutoScalingGroup:
+    Type: "AWS::AutoScaling::AutoScalingGroup"
+    Properties:
+      AutoScalingGroupName: !Sub "${Environment}-${AWS::StackName}"
+      VPCZoneIdentifier: !Ref Subnets
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MinSize: 1
+      MaxSize: !Ref AutoScalingDesiredCount
+      DesiredCapacity: !Ref AutoScalingDesiredCount
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: true
+
+# Our various exports that can be drawn in by other stacks
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub "${Environment}-${DescriptiveName}-Vpc"
+  SubnetIds:
+    Value: !Join
+        - ","
+        - !Ref Subnets
+    Export:
+      Name: !Sub "${Environment}-${DescriptiveName}-Subnets"
+  EcsCluster:
+    Value: !Ref EcsCluster
+    Export:
+      Name: !Sub "${Environment}-${DescriptiveName}-EcsCluster"
+  EcsSecurityGroup:
+    Value: !Ref EcsSecurityGroup
+    Export:
+      Name: !Sub "${Environment}-${DescriptiveName}-EcsSecurityGroup"
+  LogsGroup:
+    Value: !Ref LogsGroup
+    Export:
+      Name: !Sub "${Environment}-${DescriptiveName}-LogsGroup"
+  EcsTaskExecutionRole:
+    Value: !Ref EcsTaskExecutionRole
+    Export:
+      Name: !Sub "${Environment}-${DescriptiveName}-EcsTaskExecutionRole"
