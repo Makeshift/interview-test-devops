@@ -7,10 +7,11 @@ unless Vagrant.has_plugin?("vagrant-docker-compose")
 end
 
 Vagrant.configure("2") do |config|
-  config.vm.box = "ubuntu/bionic64"
-  config.vm.provider "virtualbox" do |vb|
-    #vb.gui = true #debugging
-  end
+  # Had to pick a hyperv compatible image - Generally I'd use virtualbox, but that meant breaking Docker support on my
+  #  desktop again :)
+  config.vm.box = "generic/ubuntu1804"
+  # Force the folder to sync since it wasn't by default
+  config.vm.synced_folder ".", "/vagrant"
   # Handle port forwarding
   config.vm.network "forwarded_port", guest: 80, host: 8080
   # Provision runtime
